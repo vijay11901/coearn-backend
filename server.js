@@ -5,11 +5,28 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Home route (just to check if server is live)
 app.get('/', (req, res) => {
   res.send('Server running from Render');
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server is live on port ${PORT}`);
+// Actual Signup route
+app.post('/signup', (req, res) => {
+  const { name, email, password, referralCode } = req.body;
+
+  if (!name || !email || !password) {
+    return res.status(400).json({ message: 'Missing fields' });
+  }
+
+  // Temporary response for testing
+  res.status(200).json({
+    message: 'Signup successful (Mock)',
+    name,
+    email,
+    referralCode
+  });
+});
+
+app.listen(3000, () => {
+  console.log('Server is live on port 3000');
 });
