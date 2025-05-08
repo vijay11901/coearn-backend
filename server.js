@@ -6,10 +6,8 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Read service account from environment variable
+// Firebase Admin initialization using environment variable
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-
-// Initialize Firebase Admin
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
@@ -18,15 +16,15 @@ const db = admin.firestore();
 
 // Test route
 app.get('/', (req, res) => {
-  res.send('Server is live on Render!');
+  res.send('Render server is live!');
 });
 
-// Signup route with referral logic
+// Secure signup route
 app.post('/signup', async (req, res) => {
-  const { name, email, referralCode } = req.body;
+  const { name, email, referralCodeInput } = req.body;
 
   if (!name || !email) {
-    return res.status(400).json({ message: 'Missing fields' });
+    return res.status(400).json({ message: 'Missing required fields' });
   }
 
   try {
@@ -35,13 +33,12 @@ app.post('/signup', async (req, res) => {
     let coins = 0;
     let referredBy = '';
 
-    if (referralCode) {
-      const refQuery = await db.collection('users').where('referralCode', '==', referralCode).limit(1).get();
+    if (referralCodeInput) {
+      const refQuery = await db.collection('users').where('referralCode', '==', referralCodeInput).limit(1).get();
       if (!refQuery.empty) {
         const refDoc = refQuery.docs[0];
         const refData = refDoc.data();
-
-        referredBy = referralCode;
+        referredBy = referralCodeInput;
         coins = 10;
 
         await db.collection('users').doc(refDoc.id).update({
@@ -63,14 +60,14 @@ app.post('/signup', async (req, res) => {
       createdAt: new Date().toISOString()
     });
 
-    res.status(200).json({ message: 'Signup successful!' });
-  } catch (error) {
-    console.error('Signup error:', error);
-    res.status(500).json({ message: 'Server error' });
+    return res.status(200).json({ message: 'Signup successful' });
+  } catch (err) {
+    console.error('Signup error:', err);
+    return res.status(500).json({ message: 'Internal server error' });
   }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log('Server running on port', PORT);
+  console.log(`Server live on port ${PORT}`);
 });
