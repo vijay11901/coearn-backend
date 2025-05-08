@@ -6,35 +6,54 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Firebase Admin initialization using environment variable
+// Initialize Firebase Admin
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
-
 const db = admin.firestore();
+const auth = admin.auth();
 
-// Test route
-app.get('/', (req, res) => {
-  res.send('Render server is live!');
-});
-
-// Secure signup route
-app.post('/signup', async (req, res) => {
-  const { name, email, referralCodeInput } = req.body;
-
-  if (!name || !email) {
-    return res.status(400).json({ message: 'Missing required fields' });
-  }
+// Middleware: Verify ID token
+async function verifyToken(req, res, next) {
+  const idToken = req.headers.authorization;
+  if (!idToken) return res.status(401).json({ message: 'No token provided' });
 
   try {
-    const uid = email.replace(/[^a-zA-Z0-9]/g, '').slice(0, 10) + Date.now(); // Temporary UID
+    const decoded = await auth.verifyIdToken(idToken);
+    req.uid = decoded.uid;
+    next();
+  } catch (err) {
+    return res.status(403).json({ message: 'Invalid token' });
+  }
+}
+
+// Route to validate referral code
+app.get('/check-referral/:code', async (req, res) => {
+  const { code } = req.params;
+  const refSnap = await db.collection('users').where('referralCode', '==', code).limit(1).get();
+
+  if (refSnap.empty) return res.status(404).json({ exists: false });
+  const user = refSnap.docs[0].data();
+  res.json({ exists: true, name: user.name });
+});
+
+// Signup Route
+app.post('/signup', verifyToken, async (req, res) => {
+  const { name, email, referralCodeInput } = req.body;
+  const uid = req.uid;
+
+  try {
     const userReferralCode = uid.slice(0, 6);
     let coins = 0;
     let referredBy = '';
 
     if (referralCodeInput) {
-      const refQuery = await db.collection('users').where('referralCode', '==', referralCodeInput).limit(1).get();
+      const refQuery = await db.collection('users')
+        .where('referralCode', '==', referralCodeInput)
+        .limit(1)
+        .get();
+
       if (!refQuery.empty) {
         const refDoc = refQuery.docs[0];
         const refData = refDoc.data();
@@ -60,14 +79,15 @@ app.post('/signup', async (req, res) => {
       createdAt: new Date().toISOString()
     });
 
-    return res.status(200).json({ message: 'Signup successful' });
-  } catch (err) {
-    console.error('Signup error:', err);
-    return res.status(500).json({ message: 'Internal server error' });
+    res.json({ message: 'Signup success' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server live on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
+
