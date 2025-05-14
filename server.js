@@ -28,73 +28,57 @@ async function verifyToken(req, res, next) {
   }
 }
 
-// Route to validate referral code
-app.get('/check-referral/:code', async (req, res) => {
-  try {
-    const { code } = req.params;
-    const refSnap = await db.collection('users').where('referralCode', '==', code).limit(1).get();
+// Process referral bonus (called from client when pending referral is detected)
+app.post('/process-referral', verifyToken, async (req, res) => {
+  const { newUserId, referrerId } = req.body;
 
-    if (refSnap.empty) return res.status(404).json({ exists: false });
-    const user = refSnap.docs[0].data();
-    res.json({ exists: true, name: user.name });
-  } catch (err) {
-    res.status(500).json({ message: 'Error checking referral' });
+  try {
+    const batch = db.batch();
+
+    // 1. Update new user's coins (+10)
+    const newUserRef = db.collection('users').doc(newUserId);
+    batch.update(newUserRef, {
+      coins: admin.firestore.FieldValue.increment(10)
+    });
+
+    // 2. Update referrer's coins (+5) and referral count
+    const referrerRef = db.collection('users').doc(referrerId);
+    batch.update(referrerRef, {
+      coins: admin.firestore.FieldValue.increment(5),
+      referrals: admin.firestore.FieldValue.increment(1)
+    });
+
+    await batch.commit();
+    res.json({ success: true });
+
+  } catch (error) {
+    console.error('Referral processing error:', error);
+    res.status(500).json({ message: 'Error processing referral' });
   }
 });
 
-// Signup Route
-app.post('/signup', verifyToken, async (req, res) => {
-  const { name, email, referralCodeInput } = req.body;
-  const uid = req.uid;
+// Complete task and award coins
+app.post('/complete-task', verifyToken, async (req, res) => {
+  const { taskType } = req.body;
+  const userId = req.uid;
+
+  // Determine coins based on task type
+  let coinsEarned = 0;
+  switch(taskType) {
+    case 'youtube': coinsEarned = 5; break;
+    case 'instagram': coinsEarned = 3; break;
+    default: coinsEarned = 1;
+  }
 
   try {
-    const userReferralCode = uid.slice(0, 6);
-    let coins = 0;
-    let referredBy = '';
-    const tasks = [];
-
-    if (referralCodeInput) {
-      const refQuery = await db.collection('users')
-        .where('referralCode', '==', referralCodeInput)
-        .limit(1)
-        .get();
-
-      if (!refQuery.empty) {
-        const refDoc = refQuery.docs[0];
-        const refData = refDoc.data();
-        referredBy = referralCodeInput;
-        coins = 10;
-
-        // Add referral update task
-        tasks.push(
-          db.collection('users').doc(refDoc.id).update({
-            coins: (refData.coins || 0) + 5,
-            referrals: (refData.referrals || 0) + 1
-          })
-        );
-      } else {
-        return res.status(400).json({ message: 'Invalid referral code' });
-      }
-    }
-
-    // Add user creation task
-    tasks.push(
-      db.collection('users').doc(uid).set({
-        name,
-        email,
-        referralCode: userReferralCode,
-        referredBy,
-        coins,
-        referrals: 0,
-        createdAt: new Date().toISOString()
-      })
-    );
-
-    await Promise.all(tasks);
-    res.json({ message: 'Signup success' });
+    await db.collection('users').doc(userId).update({
+      coins: admin.firestore.FieldValue.increment(coinsEarned),
+      lastTaskCompleted: admin.firestore.FieldValue.serverTimestamp()
+    });
+    res.json({ coinsEarned });
   } catch (error) {
-    console.error('Signup error:', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error('Task completion error:', error);
+    res.status(500).json({ message: 'Error completing task' });
   }
 });
 
@@ -102,14 +86,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-
-
-
-
-
-
-
-
-
-
