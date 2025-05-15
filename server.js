@@ -57,25 +57,42 @@ app.post('/process-referral', verifyToken, async (req, res) => {
   }
 });
 
-// Complete task and award coins
-app.post('/complete-task', verifyToken, async (req, res) => {
-  const { taskType } = req.body;
+// Process batch rewards (called when 3+ tasks or 5 minutes passed)
+app.post('/process-batch-rewards', verifyToken, async (req, res) => {
+  const { rewards } = req.body;
   const userId = req.uid;
 
-  // Determine coins based on task type
-  let coinsEarned = 0;
-  switch(taskType) {
-    case 'youtube': coinsEarned = 5; break;
-    case 'instagram': coinsEarned = 3; break;
-    default: coinsEarned = 1;
+  try {
+    // Here you would add verification logic for each task type
+    // For now, we'll just log them
+    rewards.forEach(reward => {
+      console.log(`Processing ${reward.type} reward of ${reward.amount} coins for user ${userId}`);
+    });
+
+    // In a real app, you would:
+    // 1. Verify each task (check Telegram API, YouTube API, etc.)
+    // 2. Update transaction history
+    // 3. Log the batch processing
+
+    res.json({ success: true, processed: rewards.length });
+  } catch (error) {
+    console.error('Batch processing error:', error);
+    res.status(500).json({ message: 'Error processing batch' });
   }
+});
+
+// Complete individual task (legacy endpoint)
+app.post('/complete-task', verifyToken, async (req, res) => {
+  const { taskType, coins } = req.body;
+  const userId = req.uid;
 
   try {
     await db.collection('users').doc(userId).update({
-      coins: admin.firestore.FieldValue.increment(coinsEarned),
+      coins: admin.firestore.FieldValue.increment(coins),
       lastTaskCompleted: admin.firestore.FieldValue.serverTimestamp()
     });
-    res.json({ coinsEarned });
+    
+    res.json({ success: true, coinsEarned: coins });
   } catch (error) {
     console.error('Task completion error:', error);
     res.status(500).json({ message: 'Error completing task' });
