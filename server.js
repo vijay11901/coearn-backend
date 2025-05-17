@@ -2,12 +2,9 @@ const express = require('express');
 const cors = require('cors');
 const admin = require('firebase-admin');
 const rateLimit = require('express-rate-limit');
-const helmet = require('helmet');
-
 const app = express();
 
 // Security Middlewares
-app.use(helmet());
 app.use(cors());
 app.use(express.json());
 
