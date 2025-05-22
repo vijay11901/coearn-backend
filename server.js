@@ -16,7 +16,7 @@ const auth = admin.auth();
 
 // Middleware: Verify ID token
 async function verifyToken(req, res, next) {
-  const idToken = req.headers.authorization;
+  const idToken = req.headers.authorization?.split('Bearer ')[1];
   if (!idToken) return res.status(401).json({ message: 'No token provided' });
 
   try {
@@ -24,36 +24,52 @@ async function verifyToken(req, res, next) {
     req.uid = decoded.uid;
     next();
   } catch (err) {
+    console.error('Token verification error:', err);
     return res.status(403).json({ message: 'Invalid token' });
   }
 }
 
-// Process referral bonus (called from client when pending referral is detected)
+// Process referral bonus
 app.post('/process-referral', verifyToken, async (req, res) => {
-  const { newUserId, referrerId } = req.body;
-
   try {
-    const batch = db.batch();
+    const { newUserId, referrerId } = req.body;
 
-    // 1. Update new user's coins (+10)
-    const newUserRef = db.collection('users').doc(newUserId);
-    batch.update(newUserRef, {
-      coins: admin.firestore.FieldValue.increment(10)
+    // Verify both users exist
+    const [newUser, referrer] = await Promise.all([
+      db.doc(`users/${newUserId}`).get(),
+      db.doc(`users/${referrerId}`).get()
+    ]);
+
+    if (!newUser.exists || !referrer.exists) {
+      return res.status(404).json({ message: 'User documents not found' });
+    }
+
+    // Process using transaction
+    await db.runTransaction(async (transaction) => {
+      // Update referrer's data
+      const referrerRef = db.doc(`users/${referrerId}`);
+      transaction.update(referrerRef, {
+        coins: admin.firestore.FieldValue.increment(100),
+        referrals: admin.firestore.FieldValue.increment(1)
+      });
+
+      // Add to referrer's history
+      const historyRef = referrerRef.collection('history').doc();
+      transaction.set(historyRef, {
+        type: 'referral_bonus',
+        amount: 100,
+        time: admin.firestore.FieldValue.serverTimestamp(),
+        details: `Referred user: ${newUserId}`
+      });
     });
 
-    // 2. Update referrer's coins (+5) and referral count
-    const referrerRef = db.collection('users').doc(referrerId);
-    batch.update(referrerRef, {
-      coins: admin.firestore.FieldValue.increment(5),
-      referrals: admin.firestore.FieldValue.increment(1)
-    });
-
-    await batch.commit();
-    res.json({ success: true });
+    res.json({ success: true, message: 'Referral processed successfully' });
 
   } catch (error) {
     console.error('Referral processing error:', error);
-    res.status(500).json({ message: 'Error processing referral' });
+    res.status(500).json({ 
+      message: error.message || 'Error processing referral' 
+    });
   }
 });
 
