@@ -21,7 +21,7 @@ async function verifyToken(req, res, next) {
 
   try {
     const decoded = await auth.verifyIdToken(idToken);
-    req.uid = decoded.uid;
+    req.user = decoded;
     next();
   } catch (err) {
     console.error('Token verification error:', err);
@@ -29,49 +29,61 @@ async function verifyToken(req, res, next) {
   }
 }
 
-// Process referral bonus
+// Process referral endpoint
 app.post('/process-referral', verifyToken, async (req, res) => {
   try {
-    const { newUserId, referrerId } = req.body;
+    const { referralCode, newUserId } = req.body;
+    const referrerId = req.user.uid;
 
-    // Verify both users exist
-    const [newUser, referrer] = await Promise.all([
-      db.doc(`users/${newUserId}`).get(),
-      db.doc(`users/${referrerId}`).get()
-    ]);
-
-    if (!newUser.exists || !referrer.exists) {
-      return res.status(404).json({ message: 'User documents not found' });
+    // Validate input
+    if (!referralCode || !newUserId) {
+      return res.status(400).json({ message: 'Missing required fields' });
     }
 
-    // Process using transaction
+    // Get referrer document
+    const referrerSnapshot = await db.collection('users')
+      .where('referralCode', '==', referralCode)
+      .limit(1)
+      .get();
+
+    if (referrerSnapshot.empty) {
+      return res.status(404).json({ message: 'Invalid referral code' });
+    }
+
+    const referrerDoc = referrerSnapshot.docs[0];
+    const referrerRef = referrerDoc.ref;
+    const newUserRef = db.collection('users').doc(newUserId);
+
+    // Process transaction
     await db.runTransaction(async (transaction) => {
       // Update referrer's data
-      const referrerRef = db.doc(`users/${referrerId}`);
       transaction.update(referrerRef, {
         coins: admin.firestore.FieldValue.increment(100),
         referrals: admin.firestore.FieldValue.increment(1)
       });
 
-      // Add to referrer's history
-      const historyRef = referrerRef.collection('history').doc();
-      transaction.set(historyRef, {
+      // Update new user's data
+      transaction.update(newUserRef, {
+        coins: admin.firestore.FieldValue.increment(50),
+        referredBy: referralCode
+      });
+
+      // Add history entries
+      const referrerHistoryRef = referrerRef.collection('history').doc();
+      transaction.set(referrerHistoryRef, {
         type: 'referral_bonus',
         amount: 100,
         time: admin.firestore.FieldValue.serverTimestamp(),
         details: `Referred user: ${newUserId}`
       });
 
-      // Mark pending referral as processed
-      const pendingRef = db.collection('pending_referrals')
-        .where('newUserId', '==', newUserId)
-        .where('processed', '==', false)
-        .limit(1);
-      
-      const snapshot = await pendingRef.get();
-      if (!snapshot.empty) {
-        transaction.update(snapshot.docs[0].ref, { processed: true });
-      }
+      const newUserHistoryRef = newUserRef.collection('history').doc();
+      transaction.set(newUserHistoryRef, {
+        type: 'referral_signup',
+        amount: 50,
+        time: admin.firestore.FieldValue.serverTimestamp(),
+        details: `Used referral code: ${referralCode}`
+      });
     });
 
     res.json({ success: true, message: 'Referral processed successfully' });
@@ -81,42 +93,6 @@ app.post('/process-referral', verifyToken, async (req, res) => {
     res.status(500).json({
       message: error.message || 'Error processing referral'
     });
-  }
-});
-
-// Complete task and award coins
-app.post('/complete-task', verifyToken, async (req, res) => {
-  const { taskType } = req.body;
-  const userId = req.uid;
-
-  // Task rewards configuration
-  const taskRewards = {
-    'telegram': 20,
-    'youtube': 30,
-    'subscribe': 10
-  };
-
-  const coinsEarned = taskRewards[taskType] || 0;
-
-  try {
-    await db.collection('users').doc(userId).update({
-      coins: admin.firestore.FieldValue.increment(coinsEarned),
-      completedTasks: admin.firestore.FieldValue.arrayUnion(taskType),
-      lastTaskCompleted: admin.firestore.FieldValue.serverTimestamp()
-    });
-    
-    // Add task history
-    await db.collection('users').doc(userId).collection('history').add({
-      type: 'task',
-      taskType: taskType,
-      amount: coinsEarned,
-      time: admin.firestore.FieldValue.serverTimestamp()
-    });
-
-    res.json({ coinsEarned });
-  } catch (error) {
-    console.error('Task completion error:', error);
-    res.status(500).json({ message: 'Error completing task' });
   }
 });
 
