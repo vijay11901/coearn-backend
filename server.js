@@ -67,8 +67,8 @@ app.post('/process-referral', verifyToken, async (req, res) => {
 
   } catch (error) {
     console.error('Referral processing error:', error);
-    res.status(500).json({ 
-      message: error.message || 'Error processing referral' 
+    res.status(500).json({
+      message: error.message || 'Error processing referral'
     });
   }
 });
@@ -79,18 +79,29 @@ app.post('/complete-task', verifyToken, async (req, res) => {
   const userId = req.uid;
 
   // Determine coins based on task type
-  let coinsEarned = 0;
-  switch(taskType) {
-    case 'youtube': coinsEarned = 5; break;
-    case 'instagram': coinsEarned = 3; break;
-    default: coinsEarned = 1;
-  }
+  const taskRewards = {
+    'telegram': 20,
+    'youtube': 30,
+    'subscribe': 10
+  };
+
+  const coinsEarned = taskRewards[taskType] || 0;
 
   try {
     await db.collection('users').doc(userId).update({
       coins: admin.firestore.FieldValue.increment(coinsEarned),
+      completedTasks: admin.firestore.FieldValue.arrayUnion(taskType),
       lastTaskCompleted: admin.firestore.FieldValue.serverTimestamp()
     });
+    
+    // Add task history
+    await db.collection('users').doc(userId).collection('history').add({
+      type: 'task',
+      taskType: taskType,
+      amount: coinsEarned,
+      time: admin.firestore.FieldValue.serverTimestamp()
+    });
+
     res.json({ coinsEarned });
   } catch (error) {
     console.error('Task completion error:', error);
