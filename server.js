@@ -61,6 +61,17 @@ app.post('/process-referral', verifyToken, async (req, res) => {
         time: admin.firestore.FieldValue.serverTimestamp(),
         details: `Referred user: ${newUserId}`
       });
+
+      // Mark pending referral as processed
+      const pendingRef = db.collection('pending_referrals')
+        .where('newUserId', '==', newUserId)
+        .where('processed', '==', false)
+        .limit(1);
+      
+      const snapshot = await pendingRef.get();
+      if (!snapshot.empty) {
+        transaction.update(snapshot.docs[0].ref, { processed: true });
+      }
     });
 
     res.json({ success: true, message: 'Referral processed successfully' });
@@ -78,7 +89,7 @@ app.post('/complete-task', verifyToken, async (req, res) => {
   const { taskType } = req.body;
   const userId = req.uid;
 
-  // Determine coins based on task type
+  // Task rewards configuration
   const taskRewards = {
     'telegram': 20,
     'youtube': 30,
