@@ -121,3 +121,7 @@ app.post('/processReferral', verifyToken, async (req, res) => {
 // Export the Express app as Firebase Cloud Function
 exports.api = functions.https.onRequest(app);
 
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
