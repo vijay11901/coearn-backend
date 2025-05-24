@@ -1,114 +1,122 @@
+kconst functions = require('firebase-functions');
 const express = require('express');
 const cors = require('cors');
 const admin = require('firebase-admin');
-const serviceAccount = require('./serviceAccountKey.json'); // Download from Firebase Console
 
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  databaseURL: "https://coearn1.firebaseio.com"
-});
-
-const db = admin.firestore();
+// Initialize Express app
 const app = express();
-app.use(cors());
+
+// Configure middleware
+app.use(cors({ origin: true }));
 app.use(express.json());
 
-// Pending referrals collection
-const pendingRef = db.collection('pendingReferrals');
-
-// 1. Initial Referral Validation Endpoint
-app.post('/process-referral', async (req, res) => {
-  try {
-    const { referralCode, newUserEmail } = req.body;
-    
-    // Validate referral code
-    const usersRef = db.collection('users');
-    const snapshot = await usersRef
-      .where('referralCode', '==', referralCode)
-      .limit(1)
-      .get();
-
-    if (snapshot.empty) {
-      return res.status(400).json({ error: 'Invalid referral code' });
-    }
-
-    // Store pending referral
-    await pendingRef.add({
-      referralCode,
-      newUserEmail,
-      processed: false,
-      timestamp: admin.firestore.FieldValue.serverTimestamp()
-    });
-
-    res.status(200).json({ valid: true });
-  } catch (error) {
-    console.error('Referral validation error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+// Initialize Firebase Admin
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
 });
+const db = admin.firestore();
+const auth = admin.auth();
 
-// 2. Final Referral Processing Endpoint
-app.post('/finalize-referral', async (req, res) => {
-  const { referralCode, newUserId } = req.body;
-  const batch = db.batch();
+// Authentication middleware
+async function verifyToken(req, res, next) {
+  const idToken = req.headers.authorization?.split('Bearer ')[1];
+  if (!idToken) return res.status(401).json({ message: 'No token provided' });
 
   try {
-    // Get new user data
-    const newUserRef = db.collection('users').doc(newUserId);
-    const newUserDoc = await newUserRef.get();
-    const newUserEmail = newUserDoc.data().email;
+    const decoded = await auth.verifyIdToken(idToken);
+    req.uid = decoded.uid;
+    next();
+  } catch (err) {
+    console.error('Token verification error:', err);
+    return res.status(403).json({ message: 'Invalid token' });
+  }
+}
 
-    // Find pending referral
-    const pendingQuery = await pendingRef
-      .where('referralCode', '==', referralCode)
-      .where('newUserEmail', '==', newUserEmail)
-      .where('processed', '==', false)
-      .limit(1)
-      .get();
+// Referral processing endpoint
+app.post('/processReferral', verifyToken, async (req, res) => {
+  try {
+    const { referralCode, newUserId } = req.body;
 
-    if (pendingQuery.empty) {
-      return res.status(400).json({ error: 'No valid pending referral' });
+    if (!referralCode || !newUserId) {
+      return res.status(400).json({ error: 'Missing required parameters' });
     }
 
-    const pendingId = pendingQuery.docs[0].id;
-    const referrerQuery = await db.collection('users')
+    // Verify the requesting user matches the new user ID
+    if (req.uid !== newUserId) {
+      return res.status(403).json({ error: 'Unauthorized operation' });
+    }
+
+    const batch = db.batch();
+    const usersRef = db.collection('users');
+
+    // Find referrer
+    const referrerQuery = await usersRef
       .where('referralCode', '==', referralCode)
       .limit(1)
       .get();
 
     if (referrerQuery.empty) {
-      return res.status(400).json({ error: 'Referrer not found' });
+      return res.status(404).json({ error: 'Invalid referral code' });
     }
 
-    const referrerRef = referrerQuery.docs[0].ref;
+    const referrerDoc = referrerQuery.docs[0];
+    const referrerId = referrerDoc.id;
 
-    // Transaction for atomic updates
-    await db.runTransaction(async (transaction) => {
-      // Add 100 coins to new user
-      transaction.update(newUserRef, {
-        coins: admin.firestore.FieldValue.increment(100)
-      });
+    // Get references
+    const newUserRef = usersRef.doc(newUserId);
+    const referrerRef = usersRef.doc(referrerId);
 
-      // Add 50 coins to referrer
-      transaction.update(referrerRef, {
-        coins: admin.firestore.FieldValue.increment(50),
-        referrals: admin.firestore.FieldValue.increment(1)
-      });
+    // Verify new user exists
+    const newUserDoc = await newUserRef.get();
+    if (!newUserDoc.exists) {
+      return res.status(404).json({ error: 'New user not found' });
+    }
 
-      // Mark referral as processed
-      transaction.update(pendingRef.doc(pendingId), {
-        processed: true
-      });
+    // Add transactions to batch
+    batch.update(newUserRef, {
+      coins: admin.firestore.FieldValue.increment(100)
     });
 
-    res.status(200).json({ success: true });
+    batch.update(referrerRef, {
+      coins: admin.firestore.FieldValue.increment(50),
+      referrals: admin.firestore.FieldValue.increment(1)
+    });
+
+    // Create transaction history
+    const newUserHistoryRef = newUserRef.collection('history').doc();
+    batch.set(newUserHistoryRef, {
+      type: 'referral_bonus',
+      amount: 100,
+      time: admin.firestore.FieldValue.serverTimestamp(),
+      details: `Referral signup bonus using code ${referralCode}`
+    });
+
+    const referrerHistoryRef = referrerRef.collection('history').doc();
+    batch.set(referrerHistoryRef, {
+      type: 'referral_earnings',
+      amount: 50,
+      time: admin.firestore.FieldValue.serverTimestamp(),
+      details: `Referral earnings from ${newUserId}`
+    });
+
+    // Commit the batch
+    await batch.commit();
+
+    res.status(200).json({
+      success: true,
+      message: 'Referral bonuses distributed successfully',
+      newUserBonus: 100,
+      referrerBonus: 50
+    });
   } catch (error) {
-    console.error('Final processing error:', error);
-    res.status(500).json({ error: 'Failed to process referral' });
+    console.error('Error processing referral:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      details: error.message
+    });
   }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+// Export the Express app as Firebase Cloud Function
+exports.api = functions.https.onRequest(app);
