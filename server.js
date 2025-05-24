@@ -1,4 +1,4 @@
-kconst functions = require('firebase-functions');
+const functions = require('firebase-functions');
 const express = require('express');
 const cors = require('cors');
 const admin = require('firebase-admin');
@@ -120,3 +120,4 @@ app.post('/processReferral', verifyToken, async (req, res) => {
 
 // Export the Express app as Firebase Cloud Function
 exports.api = functions.https.onRequest(app);
+
